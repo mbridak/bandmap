@@ -13,9 +13,22 @@ I've written what can be considered a companion application. It's not new, or no
 * It will dynamically resize and prune the list of spots if they don't fit in the window, tossing the oldest ones.
 * It can limit the returned spots to those in the general portion of the band. No use in cluttering the screen with spots you're not allowed to work if you're not an Extra/Advanced class.
 
+## Install, Update, Remove
+
+```bash
+# Install
+pip install bandmap
+
+# Update with
+pip install -U bandmap
+
+# Remove with
+pip uninstall bandmap
+```
+
 ## Command line options
 
-```
+```text
   -h, --help            show this help message and exit
   -c CALL, --call CALL  Your callsign
   -m MYGRID, --mygrid MYGRID
@@ -37,25 +50,15 @@ I've written what can be considered a companion application. It's not new, or no
                         flrig port. Default is: 12345
   -l LOG, --log LOG     Log DB file to monitor. Default is: WFD.db
 ```
-  
+
 So at the least you'd want to start it with options specific to you. I myself would use:
-`./bandmap.py -c K6GTE -m DM13AT -g`
- 
+
+```bash
+bandmap -c K6GTE -m DM13AT -g
+```
+
 It can work with my other loggers. If you use the K1USNSST logger you can launch the bandmap with something like
 `-l ~/SST.db`
 tacked on the end, to have it monitor that log file.
- 
-![Snapshot of main screen](pics/bandmap.png)
- 
-## Requirements
 
-It uses quite a few python libraries.
-Some of which you will have to install. Usually with pip or a package manager.
-
-`pip install Rich requests bs4 lxml`
-
-Might be all you need.
-
-
-
-
+![Snapshot of main screen](https://github.com/mbridak/bandmap/raw/master/pics/bandmap.png)
