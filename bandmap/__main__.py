@@ -78,7 +78,7 @@ parser.add_argument(
     "-b",
     "--bands",
     nargs="+",
-    type=int,
+    type=str,
     help="Space separated list of bands to receive spots about. Default is: 160 80 40 20 15 10 6",
 )
 parser.add_argument(
@@ -127,9 +127,9 @@ else:
     rbnport = 7000
 
 if args.bands:
-    limitband = tuple(map(str, args.bands))
+    limitband = tuple(str(args.bands).split())
 else:
-    limitband = ("160", "80", "40", "20", "15", "10", "6")
+    limitband = ("80", "40", "20", "15", "10", "6")
 
 if args.flrighost:
     flrighost = args.flrighost
@@ -178,7 +178,7 @@ def updatecontactlist():
             result = c.fetchall()
             for contact in result:
                 if hascolumn:
-                    _, callsign, _, _, _, band, _, _, _, _ = contact
+                    _, callsign, _, _, _, _, band, _, _, _, _, _, _, _ = contact
                 else:
                     _, callsign, _, _, _, _, band, _, _ = contact
                 if band in contactlist.keys():
