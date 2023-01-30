@@ -19,9 +19,28 @@ The 'showoutofband' variable if True, will show spots outside of the General ban
 Advanced or Extra make sure this is true. If you're a general like me, make it false.
 No use in seeing spots you can respond to...
 """
+# pylint: disable=global-statement
 
 import logging
+import argparse
+import re
+import time
+import xmlrpc.client
+from math import atan2, cos, radians, sin, sqrt
+from threading import Lock, Thread
+
+import requests
+
 from rich.logging import RichHandler
+from rich.traceback import install
+from rich import print  # pylint: disable=redefined-builtin
+from rich.console import Console
+
+from bs4 import BeautifulSoup as bs
+
+from bandmap.lib.database import DataBase
+from bandmap.lib.telnetlib import Telnet
+
 
 logging.basicConfig(
     level="CRITICAL",
@@ -29,24 +48,10 @@ logging.basicConfig(
     datefmt="[%X]",
     handlers=[RichHandler(rich_tracebacks=True)],
 )
-from rich.traceback import install
+
 
 install(show_locals=True)
 
-import xmlrpc.client
-import requests
-import sqlite3
-import re
-import time
-import argparse
-
-from threading import Thread, Lock
-from sqlite3 import Error
-from rich.console import Console
-from rich import print
-from bs4 import BeautifulSoup as bs
-from math import radians, sin, cos, atan2, sqrt
-from bandmap.lib.telnetlib import Telnet
 
 parser = argparse.ArgumentParser(
     description="Pull RBN spots, filter spotters w/ in a certain distance."
@@ -92,69 +97,70 @@ parser.add_argument(
 args = parser.parse_args()
 
 if args.call:
-    mycall = args.call
+    MY_CALL = args.call
 else:
-    mycall = "w1aw"
+    MY_CALL = "w1aw"
 
 if args.mygrid:
-    mygrid = args.mygrid.upper()
+    MY_GRID = args.mygrid.upper()
 else:
-    mygrid = "DM13AT"
+    MY_GRID = "DM13AT"
 
 if args.distance:
-    maxspotterdistance = args.distance
+    MAX_SPOTTER_DISTANCE = args.distance
 else:
-    maxspotterdistance = 500
+    MAX_SPOTTER_DISTANCE = 500
 
 if args.general:
-    showoutofband = False
+    SHOW_OUT_OF_BAND = False
 else:
-    showoutofband = True
+    SHOW_OUT_OF_BAND = True
 
 if args.age:
-    spottoold = args.age
+    SPOT_TO_OLD = args.age
 else:
-    spottoold = 600  # 10 minutes
+    SPOT_TO_OLD = 600  # 10 minutes
 
 if args.rbn:
-    rbn = args.rbn
+    RBN_SERVER = args.rbn
 else:
-    rbn = "telnet.reversebeacon.net"
+    RBN_SERVER = "telnet.reversebeacon.net"
 
 if args.rbnport:
-    rbnport = args.rbnport
+    RBN_PORT = args.rbnport
 else:
-    rbnport = 7000
+    RBN_PORT = 7000
 
 if args.bands:
-    limitband = tuple(str(args.bands).split())
+    LIMIT_BANDS = tuple(str(args.bands).split())
 else:
-    limitband = ("80", "40", "20", "15", "10", "6")
+    LIMIT_BANDS = ("80", "40", "20", "15", "10", "6")
 
 if args.flrighost:
-    flrighost = args.flrighost
+    FLRIG_HOST = args.flrighost
 else:
-    flrighost = "localhost"
+    FLRIG_HOST = "localhost"
 
 if args.flrigport:
-    flrigport = args.flrigport
+    FLRIG_PORT = args.flrigport
 else:
-    flrigport = 12345
+    FLRIG_PORT = 12345
 
 if args.log:
-    logdb = args.log
+    LOG_DB_NAME = args.log
 else:
-    logdb = "WFD.db"
+    LOG_DB_NAME = "WFD.db"
 
-server = xmlrpc.client.ServerProxy(f"http://{flrighost}:{flrigport}")
-conn = False
+server = xmlrpc.client.ServerProxy(f"http://{FLRIG_HOST}:{FLRIG_PORT}")
+
 lock = Lock()
 console = Console(width=38)
-localspotters = list()
-vfo = 0.0
-oldvfo = 0.0
-contactlist = dict()
-rbn_parse = r"^DX de ([A-Z\d\-\/]*)-#:\s+([\d.]*)\s+([A-Z\d\-\/]*)\s+([A-Z\d]*)\s+(\d*) dB.*\s+(\d{4}Z)"
+localspotters = []
+THE_VFO = 0.0
+OLD_VFO = 0.0
+CONTACTLIST = {}
+RBN_PARSER = r"^DX de ([A-Z\d\-\/]*)-#:\s+([\d.]*)\s+([A-Z\d\-\/]*)\s+([A-Z\d]*)\s+(\d*) dB.*\s+(\d{4}Z)"  # pylint: disable=line-too-long
+database = DataBase(LOG_DB_NAME)
 
 
 def updatecontactlist():
@@ -162,41 +168,26 @@ def updatecontactlist():
     Scans the loggers database and builds a callsign on band dictionary
     so the spots can be flagged red so you know you can bypass them on the bandmap.
     """
-    global contactlist
-    contactlist = dict()
-    try:
-        with sqlite3.connect(logdb) as conn:
-            c = conn.cursor()
-            sql = "SELECT COUNT(*) as hascolumn FROM pragma_table_info('contacts') WHERE name='mode';"
-            c.execute(sql)
-            hascolumn = c.fetchone()[0]
-            if hascolumn:
-                sql = "select * from contacts where mode='CW'"
-            else:
-                sql = "select * from contacts"
-            c.execute(sql)
-            result = c.fetchall()
-            for contact in result:
-                if hascolumn:
-                    _, callsign, _, _, _, _, band, _, _, _, _, _, _, _ = contact
-                else:
-                    _, callsign, _, _, _, _, band, _, _ = contact
-                if band in contactlist.keys():
-                    contactlist[band].append(callsign)
-                else:
-                    contactlist[band] = list()
-                    contactlist[band].append(callsign)
-    except Error as e:
-        console.print(e)
+    global CONTACTLIST
+    CONTACTLIST = {}
+    result = database.get_contacts()
+    for contact in result:
+        band = contact.get("band")
+        callsign = contact.get("callsign")
+
+        if band in CONTACTLIST:
+            CONTACTLIST[band].append(callsign)
+        else:
+            CONTACTLIST[band] = list()
+            CONTACTLIST[band].append(callsign)
 
 
 def alreadyworked(callsign, band):
     """
     Check if callsign has already been worked on band.
     """
-    global contactlist
-    if str(band) in contactlist:
-        return callsign in contactlist[str(band)]
+    if str(band) in CONTACTLIST:
+        return callsign in CONTACTLIST[str(band)]
     return False
 
 
@@ -204,12 +195,14 @@ def getvfo():
     """
     Get the freq from the active VFO in khz.
     """
-    global vfo
+    global THE_VFO
     while True:
         try:
-            vfo = float(server.rig.get_vfo()) / 1000
-        except:
-            vfo = 0.0
+            THE_VFO = float(server.rig.get_vfo()) / 1000
+        except ValueError:
+            THE_VFO = 0.0
+        except TypeError:
+            THE_VFO = 0.0
         time.sleep(0.25)
 
 
@@ -218,13 +211,12 @@ def comparevfo(freq):
     Return the difference in khz between the VFO and the spot.
     Spots show up in Blue, Grey, Dark Grey, Black backgrounds depending on how far away you VFO is.
     """
-    global vfo
     freq = float(freq)
     difference = 0.0
-    if vfo < freq:
-        difference = freq - vfo
+    if THE_VFO < freq:
+        difference = freq - THE_VFO
     else:
-        difference = vfo - freq
+        difference = THE_VFO - freq
     return difference
 
 
@@ -234,22 +226,22 @@ def gridtolatlon(maiden):
     """
     maiden = str(maiden).strip().upper()
 
-    N = len(maiden)
-    if not 8 >= N >= 2 and N % 2 == 0:
+    maidenhead_resolution = len(maiden)
+    if not 8 >= maidenhead_resolution >= 2 and maidenhead_resolution % 2 == 0:
         return 0, 0
 
     lon = (ord(maiden[0]) - 65) * 20 - 180
     lat = (ord(maiden[1]) - 65) * 10 - 90
 
-    if N >= 4:
+    if maidenhead_resolution >= 4:
         lon += (ord(maiden[2]) - 48) * 2
         lat += ord(maiden[3]) - 48
 
-    if N >= 6:
+    if maidenhead_resolution >= 6:
         lon += (ord(maiden[4]) - 65) / 12 + 1 / 24
         lat += (ord(maiden[5]) - 65) / 24 + 1 / 48
 
-    if N >= 8:
+    if maidenhead_resolution >= 8:
         lon += (ord(maiden[6])) * 5.0 / 600
         lat += (ord(maiden[7])) * 2.5 / 600
 
@@ -264,7 +256,9 @@ def getband(freq):
     """
     try:
         frequency = int(float(freq)) * 1000
-    except:
+    except ValueError:
+        frequency = 0.0
+    except TypeError:
         frequency = 0.0
     if frequency > 1800000 and frequency < 2000000:
         return "160"
@@ -298,7 +292,7 @@ def calc_distance(grid1, grid2):
     """
     Takes two maidenhead gridsquares and returns the distance between the two in kilometers.
     """
-    R = 6371  # earh radius
+    earth_radius = 6371
     lat1, long1 = gridtolatlon(grid1)
     lat2, long2 = gridtolatlon(grid2)
 
@@ -306,120 +300,75 @@ def calc_distance(grid1, grid2):
     d_long = radians(long2) - radians(long1)
 
     r_lat1 = radians(lat1)
-    r_long1 = radians(long1)
+    # r_long1 = radians(long1)
     r_lat2 = radians(lat2)
-    r_long2 = radians(long2)
+    # r_long2 = radians(long2)
 
-    a = sin(d_lat / 2) * sin(d_lat / 2) + cos(r_lat1) * cos(r_lat2) * sin(
+    the_a = sin(d_lat / 2) * sin(d_lat / 2) + cos(r_lat1) * cos(r_lat2) * sin(
         d_long / 2
     ) * sin(d_long / 2)
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    d = R * c  # distance in km
+    the_c = 2 * atan2(sqrt(the_a), sqrt(1 - the_a))
+    the_distance = earth_radius * the_c  # distance in km
 
-    return d
+    return the_distance
 
 
 def inband(freq):
     """
     Returns True if the frequency is within the General portion of the band.
     """
-    ib = False
+    in_band = False
     if freq > 1800 and freq < 2000:
-        ib = True
+        in_band = True
     if freq > 3525 and freq < 3600:
-        ib = True
+        in_band = True
     if freq > 3800 and freq < 4000:
-        ib = True
+        in_band = True
     if freq > 7025 and freq < 7125:
-        ib = True
+        in_band = True
     if freq > 7175 and freq < 7300:
-        ib = True
+        in_band = True
     if freq > 10100 and freq < 10150:
-        ib = True
+        in_band = True
     if freq > 14025 and freq < 14150:
-        ib = True
+        in_band = True
     if freq > 14225 and freq < 14350:
-        ib = True
+        in_band = True
     if freq > 18068 and freq < 18168:
-        ib = True
+        in_band = True
     if freq > 21025 and freq < 21200:
-        ib = True
+        in_band = True
     if freq > 21275 and freq < 21450:
-        ib = True
+        in_band = True
     if freq > 24890 and freq < 24990:
-        ib = True
+        in_band = True
     if freq > 28000 and freq < 29700:
-        ib = True
+        in_band = True
     if freq > 50000 and freq < 54000:
-        ib = True
-    return ib
+        in_band = True
+    return in_band
 
 
-def addSpot(callsign, freq, band):
-    """
-    Removes spots older than value stored in spottoold.
-    Inserts a new or updates existing spot.
-    """
-    global spottoold
-    with sqlite3.connect("spots.db") as conn:
-        spot = (callsign, freq, band)
-        c = conn.cursor()
-        sql = f"delete from spots where Cast ((JulianDay(datetime('now')) - JulianDay(date_time)) * 24 * 60 * 60 As Integer) > {spottoold}"
-        c.execute(sql)
-        conn.commit()
-        sql = f"select count(*) from spots where callsign='{callsign}'"
-        c.execute(sql)
-        result = c.fetchall()
-        if result[0][0] == 0:
-            sql = "INSERT INTO spots(callsign, date_time, frequency, band) VALUES(?,datetime('now'),?,?)"
-            c.execute(sql, spot)
-            conn.commit()
-        else:
-            sql = f"update spots set frequency='{freq}', date_time = datetime('now'), band='{band}' where callsign='{callsign}';"
-            c.execute(sql)
-            conn.commit()
-
-
-def pruneoldest():
-    """
-    Removes the oldest spot.
-    """
-    with sqlite3.connect("spots.db") as conn:
-        c = conn.cursor()
-        sql = "select * from spots order by date_time asc"
-        c.execute(sql)
-        result = c.fetchone()
-        id, _, _, _, _ = result
-        sql = f"delete from spots where id='{id}'"
-        c.execute(sql)
-        conn.commit()
-
-
-def showspots(lock):
+def showspots(the_lock):
     """
     Show spot list, sorted by frequency.
     Prune the list if it's longer than the window by removing the oldest spots.
     If tracking your VFO highlight those spots in/near your bandpass.
     Mark those already worked in red.
     """
-    global vfo
     while True:
         updatecontactlist()
         console.clear()
-        console.rule(f"[bold red]Spots VFO: {vfo}")
-        with lock:
-            with sqlite3.connect("spots.db") as conn:
-                c = conn.cursor()
-                sql = "select *, Cast ((JulianDay(datetime('now')) - JulianDay(date_time)) * 24 * 60 * 60 As Integer) from spots order by frequency asc"
-                c.execute(sql)
-                result = c.fetchall()
+        console.rule(f"[bold red]Spots VFO: {THE_VFO}")
+        with the_lock:
+            result = DataBase.getspots()
         displayed = 2
-        for x, spot in enumerate(result):
+        for spot in result:
             _, callsign, date_time, frequency, band, delta = spot
             displayed += 1
             if displayed > console.height:
-                with lock:
-                    pruneoldest()
+                with the_lock:
+                    DataBase.prune_oldest_spot()
             else:
                 if inband(frequency):
                     style = ""
@@ -434,28 +383,32 @@ def showspots(lock):
                 if alreadyworked(callsign, band):
                     style = "bold on color(88)"
                 console.print(
-                    f"{callsign.ljust(11)} {str(frequency).rjust(8)} {str(band).rjust(3)}M {date_time.split()[1]} {delta}",
+                    (
+                        f"{callsign.ljust(11)} {str(frequency).rjust(8)} "
+                        f"{str(band).rjust(3)}M {date_time.split()[1]} {delta}"
+                    ),
                     style=style,
                     overflow="ellipsis",
                 )
         time.sleep(1)
 
 
-def getrbn(lock):
-    with Telnet(rbn, rbnport) as tn:
+def getrbn(the_lock):
+    """Thread to get RBN spots"""
+    with Telnet(RBN_SERVER, RBN_PORT) as tn_connection:
         while True:
-            stream = tn.read_until(b"\r\n", timeout=1.0)
+            stream = tn_connection.read_until(b"\r\n", timeout=1.0)
             if stream == b"":
                 continue
             stream = stream.decode()
             if "Please enter your call:" in stream:
-                tn.write(f"{mycall}\r\n".encode("ascii"))
+                tn_connection.write(f"{MY_CALL}\r\n".encode("ascii"))
                 continue
             data = stream.split("\r\n")
             for entry in data:
                 if not entry:
                     continue
-                parsed = list(re.findall(rbn_parse, entry.strip()))
+                parsed = list(re.findall(RBN_PARSER, entry.strip()))
                 if not parsed or len(parsed[0]) < 6:
                     continue
                 spotter = parsed[0][0]
@@ -467,14 +420,15 @@ def getrbn(lock):
                 freq = float(parsed[0][1])
                 band = getband(freq)
                 callsign = parsed[0][2]
-                if not inband(float(freq)) and showoutofband == False:
+                if not inband(float(freq)) and SHOW_OUT_OF_BAND is False:
                     continue
-                if band in limitband:
-                    with lock:
-                        addSpot(callsign, freq, band)
+                if band in LIMIT_BANDS:
+                    with the_lock:
+                        DataBase.add_spot(callsign, freq, band, SPOT_TO_OLD)
 
 
 def run():
+    """Main Entry"""
     console.clear()
     updatecontactlist()
     console.rule("[bold red]Finding Spotters")
@@ -486,35 +440,29 @@ def run():
     for row in rows:
         datum = row.find_all("td")
         spotter = datum[0].a.contents[0].strip()
-        bands = datum[1].contents[0].strip()
+        # bands = datum[1].contents[0].strip()
         grid = datum[2].contents[0]
-        distance = calc_distance(grid, mygrid) / 1.609
-        if distance < maxspotterdistance:
+        distance = calc_distance(grid, MY_GRID) / 1.609
+        if distance < MAX_SPOTTER_DISTANCE:
             localspotters.append(spotter)
 
-    print(f"Spotters with in {maxspotterdistance} mi:")
+    print(f"Spotters with in {MAX_SPOTTER_DISTANCE} mi:")
     print(f"{localspotters}")
     time.sleep(1)
-    with sqlite3.connect("spots.db") as conn:
-        c = conn.cursor()
-        sql_table = """CREATE TABLE IF NOT EXISTS spots (id INTEGER PRIMARY KEY, callsign text, date_time text NOT NULL, frequency REAL NOT NULL, band INTEGER);"""
-        c.execute(sql_table)
-        sql = f"delete from spots where Cast ((JulianDay(datetime('now')) - JulianDay(date_time)) * 24 * 60 * 60 As Integer) > {spottoold}"
-        c.execute(sql)
-        conn.commit()
+    DataBase.setup_spots_db(SPOT_TO_OLD)
 
     # Threading Oh my!
-    t1 = Thread(target=getrbn, args=(lock,))
-    t1.daemon = True
-    t2 = Thread(target=showspots, args=(lock,))
-    t2.daemon = True
-    t3 = Thread(target=getvfo)
-    t3.daemon = True
+    thread_1 = Thread(target=getrbn, args=(lock,))
+    thread_1.daemon = True
+    thread_2 = Thread(target=showspots, args=(lock,))
+    thread_2.daemon = True
+    thread_3 = Thread(target=getvfo)
+    thread_3.daemon = True
 
-    t1.start()
-    t2.start()
-    t3.start()
+    thread_1.start()
+    thread_2.start()
+    thread_3.start()
 
-    t1.join()
-    t2.join()
-    t3.join()
+    thread_1.join()
+    thread_2.join()
+    thread_3.join()
