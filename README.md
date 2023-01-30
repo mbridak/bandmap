@@ -15,6 +15,7 @@ I've written what can be considered a companion application. It's not new, or no
 
 ## Recent changes
 
+- [23.1.30] Restructured, pep8 cleanup, isolated DB code.
 - [23.1.29] Fixed DB error
 
 ## Install, Update, Remove
